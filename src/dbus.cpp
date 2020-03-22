@@ -7,6 +7,7 @@
 using ms = std::chrono::milliseconds;
 
 struct metadata spotify;
+typedef std::vector<std::pair<std::string, std::string>> string_pair_vec;
 
 std::string format_signal(const DBusSignal& s)
 {
@@ -40,13 +41,14 @@ bool get_string_array(DBusMessageIter *iter_, std::vector<std::string>& entries)
     }
 
     if (current_type != DBUS_TYPE_ARRAY) {
-        std::cerr << "Not an array :" << (char)current_type << std::endl;
+        std::cerr << "Not an array: '" << (char)current_type << "'" << std::endl;
         return false;
     }
 
     char *val = nullptr;
 
     dbus_message_iter_recurse (&iter, &subiter);
+    entries.clear();
     while ((current_type = dbus_message_iter_get_arg_type (&subiter)) != DBUS_TYPE_INVALID) {
         if (current_type == DBUS_TYPE_STRING)
         {
@@ -84,10 +86,11 @@ static bool get_variant_string(DBusMessageIter *iter_, std::string &val, bool ke
     return true;
 }
 
-static void parse_mpris_metadata(DBusMessageIter *iter_, std::vector<std::pair<std::string, std::string>>& entries)
+static void parse_mpris_metadata(DBusMessageIter *iter_, string_pair_vec& entries)
 {
     DBusMessageIter subiter, iter = *iter_;
     std::string key, val;
+    std::vector<std::string> list;
 
     while (dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_INVALID)
     {
@@ -96,31 +99,24 @@ static void parse_mpris_metadata(DBusMessageIter *iter_, std::vector<std::pair<s
         if (!get_variant_string(&iter, key))
             return;
 
+        dbus_message_iter_recurse (&iter, &subiter);
+        dbus_message_iter_next (&subiter);
+
         //std::cerr << "\tkey: " << key << std::endl;
-        if (key == "mpris:artUrl" || key == "xesam:title")
-        {
-            if (!get_variant_string(&iter, val, true))
-                continue;
-            //std::cerr << key << "=" << val << std::endl;
+        if (get_variant_string(&subiter, val)) {
+            //std::cerr << "\t\t" << val << std::endl;
             entries.push_back({key, val});
         }
-        else if (key == "xesam:artist")
-        {
-            dbus_message_iter_recurse (&iter, &subiter);
-            dbus_message_iter_next (&subiter);
-            std::vector<std::string> list;
-            if (get_string_array(&subiter, list)) {
-                //std::cerr << "Artists:\n";
-                for (auto& s : list) {
-                    //std::cerr << "\t" << s << std::endl;
-                    entries.push_back({key, s});
-                }
+        else if (get_string_array(&subiter, list)) {
+            for (auto& s : list) {
+                //std::cerr << "\t\t" << s << std::endl;
+                entries.push_back({key, s});
             }
         }
     }
 }
 
-static void parse_mpris_properties(DBusMessage *msg, std::string& source, std::vector<std::pair<std::string, std::string>>& entries)
+static void parse_mpris_properties(DBusMessage *msg, std::string& source, string_pair_vec& entries)
 {
     const char *val_char = nullptr;
     DBusMessageIter iter;
@@ -178,13 +174,18 @@ static void parse_mpris_properties(DBusMessage *msg, std::string& source, std::v
             parse_mpris_metadata(&iter, entries);
         }
         else if (key == "PlaybackStatus") {
+            dbus_message_iter_recurse (&stack.back(), &iter);
+            dbus_message_iter_next (&iter);
+
+            if (get_variant_string(&iter, val))
+                entries.push_back({key, val});
         }
 
         dbus_message_iter_next (&stack.back());
     }
 }
 
-static void parse_property_changed(DBusMessage *msg, std::string& source, std::vector<std::pair<std::string, std::string>>& entries)
+static void parse_property_changed(DBusMessage *msg, std::string& source, string_pair_vec& entries)
 {
     char *name = nullptr;
     int i;
@@ -278,18 +279,17 @@ static void parse_property_changed(DBusMessage *msg, std::string& source, std::v
     }
 }
 
-void get_dict_string_array(DBusMessage *msg, std::vector<std::pair<std::string, std::string>>& entries)
+void get_dict_string_array(DBusMessage *msg, string_pair_vec& entries)
 {
-    DBusMessageIter iter, subiter;
-    dbus_message_iter_init (msg, &iter);
+    DBusMessageIter iter, outer_iter;
+    dbus_message_iter_init (msg, &outer_iter);
     int current_type = DBUS_TYPE_INVALID;
 
-    current_type = dbus_message_iter_get_arg_type (&iter);
+    current_type = dbus_message_iter_get_arg_type (&outer_iter);
 
     if (current_type == DBUS_TYPE_VARIANT) {
-        dbus_message_iter_recurse (&iter, &subiter);
-        current_type = dbus_message_iter_get_arg_type (&subiter);
-        iter = subiter;
+        dbus_message_iter_recurse (&outer_iter, &outer_iter);
+        current_type = dbus_message_iter_get_arg_type (&outer_iter);
     }
 
     if (current_type != DBUS_TYPE_ARRAY) {
@@ -299,16 +299,16 @@ void get_dict_string_array(DBusMessage *msg, std::vector<std::pair<std::string, 
 
     char *val_key = nullptr, *val_value = nullptr;
 
-    dbus_message_iter_recurse (&iter, &subiter);
-    while ((current_type = dbus_message_iter_get_arg_type (&subiter)) != DBUS_TYPE_INVALID) {
+    dbus_message_iter_recurse (&outer_iter, &outer_iter);
+    while ((current_type = dbus_message_iter_get_arg_type (&outer_iter)) != DBUS_TYPE_INVALID) {
         // printf("type: %d\n", current_type);
 
         if (current_type == DBUS_TYPE_DICT_ENTRY)
         {
-            dbus_message_iter_recurse (&subiter, &iter);
+            dbus_message_iter_recurse (&outer_iter, &iter);
 
             // dict entry key
-            // printf("\tentry: {%c, ", dbus_message_iter_get_arg_type (&iter));
+            //printf("\tentry: {%c, ", dbus_message_iter_get_arg_type (&iter));
             dbus_message_iter_get_basic (&iter, &val_key);
             std::string key = val_key;
 
@@ -321,33 +321,54 @@ void get_dict_string_array(DBusMessage *msg, std::vector<std::pair<std::string, 
             if (dbus_message_iter_get_arg_type (&iter) == DBUS_TYPE_ARRAY) {
                 dbus_message_iter_recurse (&iter, &iter);
                 if (dbus_message_iter_get_arg_type (&iter) == DBUS_TYPE_STRING) {
+                    //printf("%c}\n", dbus_message_iter_get_arg_type (&iter));
                     dbus_message_iter_get_basic (&iter, &val_value);
-                    if (key.find("artist") != std::string::npos)
-                        spotify.artists.insert(spotify.artists.begin(), val_value);
+                    entries.push_back({val_key, val_value});
                 }
             }
-
-            // printf("%c}\n", dbus_message_iter_get_arg_type (&iter));
-            if (dbus_message_iter_get_arg_type (&iter) == DBUS_TYPE_STRING) {
+            else if (dbus_message_iter_get_arg_type (&iter) == DBUS_TYPE_STRING) {
+                //printf("%c}\n", dbus_message_iter_get_arg_type (&iter));
                 dbus_message_iter_get_basic (&iter, &val_value);
-                if (key.find("title") != std::string::npos)
-                    spotify.title = val_value;
-
-                if (key.find("artUrl") != std::string::npos)
-                    spotify.artUrl = val_value;
                 entries.push_back({val_key, val_value});
             }
         }
-        dbus_message_iter_next (&subiter);
+        dbus_message_iter_next (&outer_iter);
     }
-
-    if (spotify.artists.size() || !spotify.title.empty())
-        spotify.valid = true;
 }
 
-void get_spotify_metadata(dbusmgr::dbus_manager& dbus)
+static void assign_metadata(metadata& meta, string_pair_vec& entries)
 {
-    spotify.artists.clear();
+    std::lock_guard<std::mutex> lk(meta.mutex);
+    meta.valid = true;
+    bool artists_cleared = false;
+    for (auto& kv : entries) {
+#ifndef NDEBUG
+        std::cerr << kv.first << " = " << kv.second << std::endl;
+#endif
+        if (kv.first == "xesam:artist") {
+            if (!artists_cleared) {
+                artists_cleared = true;
+                meta.artists.clear();
+            }
+            meta.artists.push_back(kv.second);
+        }
+        else if (kv.first == "xesam:title")
+            meta.title = kv.second;
+        else if (kv.first == "xesam:album")
+            meta.album = kv.second;
+        else if (kv.first == "mpris:artUrl")
+            meta.artUrl = kv.second;
+        else if (kv.first == "PlaybackStatus")
+            meta.playing = (kv.second == "Playing");
+    }
+
+    if (!meta.artists.size() && meta.title.empty())
+        meta.valid = false;
+}
+
+void get_spotify_metadata(dbusmgr::dbus_manager& dbus, metadata& meta)
+{
+    meta.artists.clear();
 
     DBusError error;
     ::dbus_error_init(&error);
@@ -355,6 +376,7 @@ void get_spotify_metadata(dbusmgr::dbus_manager& dbus)
     DBusMessage * dbus_reply = nullptr;
     DBusMessage * dbus_msg = nullptr;
 
+    // dbus-send --print-reply --session --dest=org.mpris.MediaPlayer2.spotify /org/mpris/MediaPlayer2 org.freedesktop.DBus.Properties.Get string:'org.mpris.MediaPlayer2.Player' string:'Metadata'
     if (nullptr == (dbus_msg = ::dbus_message_new_method_call("org.mpris.MediaPlayer2.spotify", "/org/mpris/MediaPlayer2", "org.freedesktop.DBus.Properties", "Get"))) {
        throw std::runtime_error("unable to allocate memory for dbus message");
     }
@@ -375,8 +397,9 @@ void get_spotify_metadata(dbusmgr::dbus_manager& dbus)
         throw dbusmgr::dbus_error(&error);
     } else {
 
-        std::vector<std::pair<std::string, std::string>> entries;
+        string_pair_vec entries;
         get_dict_string_array(dbus_reply, entries);
+        assign_metadata(meta, entries);
 
         // std::cout << "String entries:\n";
         //for(auto& p : entries) {
@@ -399,12 +422,6 @@ void dbus_manager::init()
     }
     std::cout << "Connected to D-Bus as \"" << ::dbus_bus_get_unique_name(m_dbus_conn) << "\"." << std::endl;
 
-    try {
-        std::lock_guard<std::mutex> lk(spotify.mutex);
-        get_spotify_metadata(*this);
-    } catch (dbus_error& e) {
-        std::cerr << "Failed to get initial Spotify metadata: " << e.what() << std::endl;
-    }
     connect_to_signals();
     m_inited = true;
 }
@@ -513,27 +530,7 @@ void dbus_manager::dbus_thread(dbus_manager *pmgr)
 #endif
                         if (source != "org.mpris.MediaPlayer2.Player")
                             break;
-
-                        std::lock_guard<std::mutex> lk(spotify.mutex);
-                        bool artists_cleared = false;
-                        for (auto& kv : entries) {
-#ifndef NDEBUG
-                            std::cerr << kv.first << " = " << kv.second << std::endl;
-#endif
-                            if (kv.first.find("artist") != std::string::npos) {
-                                if (!artists_cleared) {
-                                    artists_cleared = true;
-                                    spotify.artists.clear();
-                                }
-                                spotify.artists.push_back(kv.second);
-                            }
-                            if (kv.first.find("title") != std::string::npos)
-                                spotify.title = kv.second;
-                            if (kv.first.find("artUrl") != std::string::npos)
-                                spotify.artUrl = kv.second;
-                        }
-                        if (spotify.artists.size() || !spotify.title.empty())
-                            spotify.valid = true;
+                        assign_metadata(spotify, entries);
                     }
                     break;
                     case ST_NAMEOWNERCHANGED:

@@ -11,8 +11,10 @@
 struct metadata {
     std::vector<std::string> artists;
     std::string title;
+    std::string album;
     std::string something;
     std::string artUrl;
+    bool playing = false;
 
     bool valid = false;
     std::mutex mutex;
@@ -32,8 +34,6 @@ struct DBusSignal
 };
 
 extern struct metadata spotify;
-
-void spotifyMetadata(void);
 
 namespace dbusmgr {
     using callback_func = std::function<void(/*metadata*/)>;
@@ -98,3 +98,5 @@ namespace dbusmgr {
 
     extern dbus_manager dbus_mgr;
 }
+
+void get_spotify_metadata(dbusmgr::dbus_manager& dbus, metadata& meta);
